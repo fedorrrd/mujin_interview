@@ -10,12 +10,14 @@ class Evaluator:
     def __init__(self, filename):
         # read the file
         self.data = self._parse_csv(filename)
-        # find the bounding box surrounding all boxes (used for criterion 1)
-        # and the smallest dimensions of all the boxes (used for criterion 1)
+        # find the bounding box surrounding all boxes (used for criterion 3)
+        # and the smallest dimensions of all the boxes (used for criterion 1 and 4 in the grid system)
         # and the sum of the volumes of all the boxes (used for criterion 3)
         self.total_bounding_box, self.min_dimensions, self.sum_volumes = (
             self._preprocessor()
         )
+        # initialize the grid (for criterions 1 and 4)
+        self.grid = None
 
     def _parse_csv(self, filename):
         data = []
@@ -119,9 +121,9 @@ class Evaluator:
 
         return (min_x, min_y, min_z, max_x, max_y, max_z)
 
-    def assign_to_grid(self):
+    def create_grid(self):
         # initialize the grid
-        grid = defaultdict(list)
+        self.grid = defaultdict(list)
         # use the dimensions of the smallest box as units
         (step_x, step_y, step_z) = self.min_dimensions
 
@@ -131,9 +133,42 @@ class Evaluator:
             for x in range(min_x // step_x, max_x // step_x + 1):
                 for y in range(min_y // step_y, max_y // step_y + 1):
                     for z in range(min_z // step_z, max_z // step_z + 1):
-                        grid[(x, y, z)].append(box)
+                        self.grid[(x, y, z)].append(box)
 
-        return grid
+        return self.grid
+
+    def check_intersection(self, box1, box2):
+        min_x1, min_y1, min_z1, max_x1, max_y1, max_z1 = self.bounding_box(box1)
+        min_x2, min_y2, min_z2, max_x2, max_y2, max_z2 = self.bounding_box(box2)
+
+        # 2 boxes intersect if none the following os true
+        return not (
+            max_x1 <= min_x2  # box1 is to the left of box2
+            or max_x2 <= min_x1  # box2 is to the left of box1
+            or max_y1 <= min_y2  # box1 is closer than box2
+            or max_y2 <= min_y1  # box2 is closer than box1
+            or max_z1 <= min_z2  # box1 is lower than box2
+            or max_z2 <= min_z1  # box2 is lower than box1
+        )
+
+    def check_obstructed(self, box1, box2):
+        # check if box2 obtructs the access to box1
+        min_x1, min_y1, min_z1, max_x1, max_y1, max_z1 = self.bounding_box(box1)
+        min_x2, min_y2, min_z2, max_x2, max_y2, max_z2 = self.bounding_box(box2)
+
+        # box2 obstructs box1 if box2 is higher than box1 and its projection on xy plane intersects box1
+        return min_z2 > max_z1 and not (
+            max_x1 <= min_x2
+            or max_x2 <= min_x1
+            or max_y1 <= min_y2
+            or max_y2 <= min_y1  # refer to check_intersection
+        )
+
+    def check_supported(self, box1, box2):
+        # check if box2 supports box1
+        min_x1, min_y1, min_z1, max_x1, max_y1, max_z1 = self.bounding_box(box1)
+        min_x2, min_y2, min_z2, max_x2, max_y2, max_z2 = self.bounding_box(box2)
+        pass
 
     def criterion_volume(self):
         (
@@ -154,9 +189,10 @@ class Evaluator:
         return self.sum_volumes, total_volume, percentage_volume
 
     def criterion_intersection(self):
-        grid = self.assign_to_grid()
+        if self.grid is None:
+            self.grid = self.create_grid()
         # go through every cell in the grid and check any boxes assigned to the cell intersect
-        for cell, cell_boxes in grid.items():
+        for cell, cell_boxes in self.grid.items():
             for i in range(len(cell_boxes)):
                 for j in range(i + 1, len(cell_boxes)):
                     if self.check_intersection(cell_boxes[i], cell_boxes[j]):
@@ -164,22 +200,29 @@ class Evaluator:
         # no boxes intersect
         return False, None, None
 
-    def check_intersection(self, box1, box2):
-        min_x1, min_y1, min_z1, max_x1, max_y1, max_z1 = self.bounding_box(box1)
-        min_x2, min_y2, min_z2, max_x2, max_y2, max_z2 = self.bounding_box(box2)
+    def criterion_accessability(self):
+        for box in self.data:
+            # check if any of the previously placed boxes obstruct this box
+            for i in range(box["id"] - 1):
+                if self.check_obstructed(box, self.data[i]):
+                    return True, box, self.data[i]
+        return False, None, None
 
-        # 2 boxes intersect if none the following os true
-        return not (
-            max_x1 <= min_x2  # box1 is to the left of box2
-            or max_x2 <= min_x1  # box2 is to the left of box1
-            or max_y1 <= min_y2  # box1 is closer than box2
-            or max_y2 <= min_y1  # box2 is closer than box1
-            or max_z1 <= min_z2  # box1 is lower than box2
-            or max_z2 <= min_z1  # box2 is lower than box1
-        )
+    def criterion_support(self):
+        if self.grid is None:
+            self.grid = self.create_grid()
+        # empty array of the boxes, which are confirmed to be supported
+        supported = []
+        for cell, cell_boxes in self.grid.items():
+            # if all the boxes are supported exit the loop earlier
+            if len(supported) == len(self.data):
+                return True, None
+            for i in range(len(cell_boxes)):
+                if cell_boxes[i]["id"] not in supported:
+                    pass
 
 
-filename = "in0.csv"
+filename = "test.csv"
 evaluator = Evaluator(filename)
 
 # check if there are any box intersections
@@ -188,6 +231,14 @@ if intersection:
     print("Intersection criterion FAILED: boxes ", box1, " and ", box2, " intersect")
 else:
     print("Intersection criterion PASSED: none of the boxes intersect each other")
+
+# check if any of the boxes obstruct each other
+obstructed, box1, box2 = evaluator.criterion_accessability()
+if obstructed:
+    print("Accessibility criterion FAILED: box ", box2, " obstructs box ", box1)
+else:
+    print("Accessibility criterion PASSED: none of the boxes obstruct each other")
+
 
 # check if the boxes' volume is more than half of that the container's
 sum_volumes, total_volume, percentage_volume = evaluator.criterion_volume()
