@@ -6,81 +6,195 @@ from collections import defaultdict
 # check support
 
 
-def parse_csv(filename):
-    data = []
-    with open(filename, "r") as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            # change values for rotated boxes and add relevant values to the array
-            if int(row["rotation"]) == 1:
-                data.append(
-                    {
-                        "id": int(row["No."]),
-                        "sizeX": int(row["sizeY"]),
-                        "sizeY": int(row["sizeX"]),
-                        "sizeZ": int(row["sizeZ"]),
-                        "posX": int(row["posX"]),
-                        "posY": int(row["posY"]),
-                        "posZ": int(row["posZ"]),
-                    }
-                )
+class Evaluator:
+    def __init__(self, filename):
+        # read the file
+        self.data = self._parse_csv(filename)
+        # find the bounding box surrounding all boxes (used for criterion 1)
+        # and the smallest dimensions of all the boxes (used for criterion 1)
+        # and the sum of the volumes of all the boxes (used for criterion 3)
+        self.total_bounding_box, self.min_dimensions, self.sum_volumes = (
+            self._preprocessor()
+        )
+
+    def _parse_csv(self, filename):
+        data = []
+        with open(filename, "r") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                # change values for rotated boxes and add relevant values to the array
+                if int(row["rotation"]) == 1:
+                    data.append(
+                        {
+                            "id": int(row["No."]),
+                            "sizeX": int(row["sizeY"]),
+                            "sizeY": int(row["sizeX"]),
+                            "sizeZ": int(row["sizeZ"]),
+                            "posX": int(row["posX"]),
+                            "posY": int(row["posY"]),
+                            "posZ": int(row["posZ"]),
+                        }
+                    )
+                else:
+                    data.append(
+                        {
+                            "id": int(row["No."]),
+                            "sizeX": int(row["sizeX"]),
+                            "sizeY": int(row["sizeY"]),
+                            "sizeZ": int(row["sizeZ"]),
+                            "posX": int(row["posX"]),
+                            "posY": int(row["posY"]),
+                            "posZ": int(row["posZ"]),
+                        }
+                    )
+        return data
+
+    def _preprocessor(self):
+        initialized = False
+        # values for the total bounding box
+        total_min_x = 0
+        total_max_x = 0
+        total_min_y = 0
+        total_max_y = 0
+        total_min_z = 0
+        total_max_z = 0
+        # values for smallest dimensions
+        min_size_x = 0
+        min_size_y = 0
+        min_size_z = 0
+        # values for sum of volume
+        sum_volumes = 0
+
+        for box in self.data:
+            volume = box["sizeX"] * box["sizeY"] * box["sizeZ"]
+            sum_volumes += volume
+            # update the values assuming there are no intersections
+            if initialized:
+                min_x, min_y, min_z, max_x, max_y, max_z = self.bounding_box(box)
+                total_min_x = min(total_min_x, min_x)
+                total_min_y = min(total_min_y, min_y)
+                total_min_z = min(total_min_z, min_z)
+                total_max_x = max(total_max_x, max_x)
+                total_max_y = max(total_max_y, max_y)
+                total_max_z = max(total_max_z, max_z)
+
+                min_size_x = min(min_size_x, box["sizeX"])
+                min_size_y = min(min_size_y, box["sizeY"])
+                min_size_z = min(min_size_z, box["sizeZ"])
             else:
-                data.append(
-                    {
-                        "id": int(row["No."]),
-                        "sizeX": int(row["sizeX"]),
-                        "sizeY": int(row["sizeY"]),
-                        "sizeZ": int(row["sizeZ"]),
-                        "posX": int(row["posX"]),
-                        "posY": int(row["posY"]),
-                        "posZ": int(row["posZ"]),
-                    }
-                )
-    return data
+                initialized = True
+                (
+                    total_min_x,
+                    total_min_y,
+                    total_min_z,
+                    total_max_x,
+                    total_max_y,
+                    total_max_z,
+                ) = self.bounding_box(box)
+
+                min_size_x = box["sizeX"]
+                min_size_y = box["sizeY"]
+                min_size_z = box["sizeZ"]
+
+        # update the total bounding box
+        total_bounding_box = [
+            total_min_x,
+            total_min_y,
+            total_min_z,
+            total_max_x,
+            total_max_y,
+            total_max_z,
+        ]
+
+        return total_bounding_box, (min_size_x, min_size_y, min_size_z), sum_volumes
+
+    def bounding_box(self, box):
+        min_x = box["posX"] - box["sizeX"] // 2
+        min_y = box["posY"] - box["sizeY"] // 2
+        min_z = box["posZ"] - box["sizeZ"] // 2
+
+        max_x = box["posX"] + box["sizeX"] // 2
+        max_y = box["posY"] + box["sizeY"] // 2
+        max_z = box["posZ"] + box["sizeZ"] // 2
+
+        return (min_x, min_y, min_z, max_x, max_y, max_z)
+
+    def assign_to_grid(self):
+        # initialize the grid
+        grid = defaultdict(list)
+        # use the dimensions of the smallest box as units
+        (step_x, step_y, step_z) = self.min_dimensions
+
+        for box in self.data:
+            min_x, min_y, min_z, max_x, max_y, max_z = self.bounding_box(box)
+
+            for x in range(min_x // step_x, max_x // step_x + 1):
+                for y in range(min_y // step_y, max_y // step_y + 1):
+                    for z in range(min_z // step_z, max_z // step_z + 1):
+                        grid[(x, y, z)].append(box)
+
+        return grid
+
+    def criterion_volume(self):
+        (
+            total_min_x,
+            total_min_y,
+            total_min_z,
+            total_max_x,
+            total_max_y,
+            total_max_z,
+        ) = self.total_bounding_box
+        total_volume = (
+            (total_max_x - total_min_x)
+            * (total_max_y - total_min_y)
+            * (total_max_z - total_min_z)
+        )
+        percentage_volume = self.sum_volumes / total_volume
+
+        return self.sum_volumes, total_volume, percentage_volume
+
+    def criterion_intersection(self):
+        grid = self.assign_to_grid()
+        # go through every cell in the grid and check any boxes assigned to the cell intersect
+        for cell, cell_boxes in grid.items():
+            for i in range(len(cell_boxes)):
+                for j in range(i + 1, len(cell_boxes)):
+                    if self.check_intersection(cell_boxes[i], cell_boxes[j]):
+                        return True, cell_boxes[i], cell_boxes[j]
+        # no boxes intersect
+        return False, None, None
+
+    def check_intersection(self, box1, box2):
+        min_x1, min_y1, min_z1, max_x1, max_y1, max_z1 = self.bounding_box(box1)
+        min_x2, min_y2, min_z2, max_x2, max_y2, max_z2 = self.bounding_box(box2)
+
+        # 2 boxes intersect if none the following os true
+        return not (
+            max_x1 <= min_x2  # box1 is to the left of box2
+            or max_x2 <= min_x1  # box2 is to the left of box1
+            or max_y1 <= min_y2  # box1 is closer than box2
+            or max_y2 <= min_y1  # box2 is closer than box1
+            or max_z1 <= min_z2  # box1 is lower than box2
+            or max_z2 <= min_z1  # box2 is lower than box1
+        )
 
 
-def check_volume(data):
-    initialized = False
-    min_x = 0
-    max_x = 0
-    min_y = 0
-    max_y = 0
-    min_z = 0
-    max_z = 0
-    volume = 0
-    for box in data:
-        # update the values assuming there are no intersections
-        volume += box["sizeX"] * box["sizeY"] * box["sizeZ"]
-        if initialized:
-            min_x = min(min_x, box["posX"] - box["sizeX"] // 2)
-            min_y = min(min_y, box["posY"] - box["sizeY"] // 2)
-            min_z = min(min_z, box["posZ"] - box["sizeZ"] // 2)
+filename = "in0.csv"
+evaluator = Evaluator(filename)
 
-            max_x = max(max_x, box["posX"] + box["sizeX"] // 2)
-            max_y = max(max_y, box["posY"] + box["sizeY"] // 2)
-            max_z = max(max_z, box["posZ"] + box["sizeZ"] // 2)
-        else:
-            initialized = True
-            min_x = box["posX"] - box["sizeX"] // 2
-            min_y = box["posY"] - box["sizeY"] // 2
-            min_z = box["posZ"] - box["sizeZ"] // 2
+# check if there are any box intersections
+intersection, box1, box2 = evaluator.criterion_intersection()
+if intersection:
+    print("Intersection criterion FAILED: boxes ", box1, " and ", box2, " intersect")
+else:
+    print("Intersection criterion PASSED: none of the boxes intersect each other")
 
-            max_x = box["posX"] + box["sizeX"] // 2
-            max_y = box["posY"] + box["sizeY"] // 2
-            max_z = box["posZ"] + box["sizeZ"] // 2
-
-    total_volume = (max_x - min_x) * (max_y - min_y) * (max_z - min_z)
-    percentage_volume = volume / total_volume
-    return volume, total_volume, percentage_volume
-
-
-data = parse_csv("in0.csv")
-volume, total_volume, percentage_volume = check_volume(data)
-
+# check if the boxes' volume is more than half of that the container's
+sum_volumes, total_volume, percentage_volume = evaluator.criterion_volume()
 if percentage_volume > 0.5:
     print(
-        "volume criterion PASSED: sum of volumes =",
-        volume,
+        "Volume criterion PASSED: sum of volumes =",
+        sum_volumes,
         ", total volume =",
         total_volume,
         ", percentage =",
@@ -88,8 +202,8 @@ if percentage_volume > 0.5:
     )
 else:
     print(
-        "volume criterion FAILED: sum of volumes =",
-        volume,
+        "Volume criterion FAILED: sum of volumes =",
+        sum_volumes,
         ", total volume =",
         total_volume,
         ", percentage =",
