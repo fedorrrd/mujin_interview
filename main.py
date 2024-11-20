@@ -1,9 +1,5 @@
 import csv
 from collections import defaultdict
-# check intersections
-# check approachability
-# check volume
-# check support
 
 
 class Evaluator:
@@ -201,11 +197,12 @@ class Evaluator:
         return False, None, None
 
     def criterion_accessability(self):
-        for box in self.data:
+        for i in range(len(self.data)):
             # check if any of the previously placed boxes obstruct this box
-            for i in range(box["id"] - 1):
-                if self.check_obstructed(box, self.data[i]):
-                    return True, box, self.data[i]
+            for j in range(i):
+                # check if any of the previously placed boxes obstruct this box
+                if self.check_obstructed(self.data[i], self.data[j]):
+                    return True, self.data[i], self.data[j]
         return False, None, None
 
     def criterion_support(self):
@@ -222,7 +219,7 @@ class Evaluator:
                     pass
 
 
-filename = "test.csv"
+filename = "in0.csv"
 evaluator = Evaluator(filename)
 
 # check if there are any box intersections
