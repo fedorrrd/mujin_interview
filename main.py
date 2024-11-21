@@ -1,4 +1,5 @@
 import csv
+import sys
 from collections import defaultdict
 
 
@@ -7,7 +8,7 @@ class Evaluator:
         # read the file
         self.data = self._parse_csv(filename)
         # find the bounding box surrounding all boxes (used for criterion 3)
-        # and the smallest dimensions of all the boxes (used for criterion 1 and 4 in the grid system)
+        # and the smallest dimensions of all the boxes (used for criterion 1 in the grid system)
         # and the sum of the volumes of all the boxes (used for criterion 3)
         self.total_bounding_box, self.min_dimensions, self.sum_volumes = (
             self._preprocessor()
@@ -161,28 +162,32 @@ class Evaluator:
         )
 
     def check_supported(self, box1, box2):
-        # check if box2 supports box1
+        # check if box2 supports box1, return that and the part of the area, that is supported
         min_x1, min_y1, min_z1, max_x1, max_y1, max_z1 = self.bounding_box(box1)
         min_x2, min_y2, min_z2, max_x2, max_y2, max_z2 = self.bounding_box(box2)
-        pass
 
-    def criterion_volume(self):
-        (
-            total_min_x,
-            total_min_y,
-            total_min_z,
-            total_max_x,
-            total_max_y,
-            total_max_z,
-        ) = self.total_bounding_box
-        total_volume = (
-            (total_max_x - total_min_x)
-            * (total_max_y - total_min_y)
-            * (total_max_z - total_min_z)
-        )
-        percentage_volume = self.sum_volumes / total_volume
+        # the box is on the floor
+        if min_z1 <= 5:
+            return True, 1
+        # box2 is lower then box1 and within 14 mm
+        elif (min_z1 - max_z2) < 14 and (min_z1 - max_z2) > 0:
+            # box1's projection overlaps with box2
+            if (
+                min_x1 < max_x2
+                and max_x1 > min_x2
+                and min_y1 < max_y2
+                and max_y1 > min_y2
+            ):
+                covered_area = (min(max_x1, max_x2) - max(min_x1, min_x2)) * (
+                    min(max_y1, max_y2) - max(min_y1, min_y2)
+                )
+                box1_area = box1["sizeX"] * box1["sizeY"]
+                return True, covered_area / box1_area
+            else:
+                return False, 0
 
-        return self.sum_volumes, total_volume, percentage_volume
+        else:
+            return False, 0
 
     def criterion_intersection(self):
         if self.grid is None:
@@ -205,55 +210,105 @@ class Evaluator:
                     return True, self.data[i], self.data[j]
         return False, None, None
 
+    def criterion_volume(self):
+        (
+            total_min_x,
+            total_min_y,
+            total_min_z,
+            total_max_x,
+            total_max_y,
+            total_max_z,
+        ) = self.total_bounding_box
+        total_volume = (
+            (total_max_x - total_min_x)
+            * (total_max_y - total_min_y)
+            * (total_max_z - total_min_z)
+        )
+        percentage_volume = self.sum_volumes / total_volume
+
+        return self.sum_volumes, total_volume, percentage_volume
+
     def criterion_support(self):
-        if self.grid is None:
-            self.grid = self.create_grid()
+        # the following code assumes that the placement passed intersection and availability validation
+
+        # sort the data in ascending order of posZ
+        sorted_data = sorted(self.data, key=lambda x: x["posZ"])
         # empty array of the boxes, which are confirmed to be supported
-        supported = []
-        for cell, cell_boxes in self.grid.items():
+        supported_boxes = []
+        for box in sorted_data:
             # if all the boxes are supported exit the loop earlier
-            if len(supported) == len(self.data):
+            if len(supported_boxes) == len(sorted_data):
                 return True, None
-            for i in range(len(cell_boxes)):
-                if cell_boxes[i]["id"] not in supported:
-                    pass
+
+            # check every box lower than the one is question of they support it
+            min_x, min_y, min_z, max_x, max_y, max_z = self.bounding_box(box)
+            i = 0
+            total_area = 0
+            if min_z > 5:
+                while sorted_data[i]["posZ"] < min_z:
+                    supported, area = self.check_supported(box, sorted_data[i])
+                    if supported:
+                        total_area += area
+                    # exit early if the box is supported
+                    if total_area >= 0.6:
+                        supported_boxes.append(box)
+                        break
+                    i += 1
+                if total_area < 0.6:
+                    return False, box
+        return True, None
 
 
-filename = "in0.csv"
-evaluator = Evaluator(filename)
+def validate_placemnet(filename):
+    evaluator = Evaluator(filename)
 
-# check if there are any box intersections
-intersection, box1, box2 = evaluator.criterion_intersection()
-if intersection:
-    print("Intersection criterion FAILED: boxes ", box1, " and ", box2, " intersect")
-else:
-    print("Intersection criterion PASSED: none of the boxes intersect each other")
+    # check if there are any box intersections
+    intersection, box1, box2 = evaluator.criterion_intersection()
+    if intersection:
+        print(
+            "Intersection criterion FAILED: boxes ", box1, " and ", box2, " intersect"
+        )
+    else:
+        print("Intersection criterion PASSED: none of the boxes intersect each other")
 
-# check if any of the boxes obstruct each other
-obstructed, box1, box2 = evaluator.criterion_accessability()
-if obstructed:
-    print("Accessibility criterion FAILED: box ", box2, " obstructs box ", box1)
-else:
-    print("Accessibility criterion PASSED: none of the boxes obstruct each other")
+    # check if any of the boxes obstruct each other
+    obstructed, box1, box2 = evaluator.criterion_accessability()
+    if obstructed:
+        print("Accessibility criterion FAILED: box ", box2, " obstructs box ", box1)
+    else:
+        print("Accessibility criterion PASSED: none of the boxes obstruct each other")
+
+    # check if the boxes' volume is more than half of that the container's
+    sum_volumes, total_volume, percentage_volume = evaluator.criterion_volume()
+    if percentage_volume > 0.5:
+        print(
+            "Volume criterion PASSED: sum of volumes =",
+            sum_volumes,
+            ", total volume =",
+            total_volume,
+            ", percentage =",
+            percentage_volume,
+        )
+    else:
+        print(
+            "Volume criterion FAILED: sum of volumes =",
+            sum_volumes,
+            ", total volume =",
+            total_volume,
+            ", percentage =",
+            percentage_volume,
+        )
+
+    # check if all of the boxes are supported
+    supported, box = evaluator.criterion_support()
+    if supported:
+        print("Support criterion PASSED: every box is supported")
+    else:
+        print("Support criterion FAILED: box ", box, " is not supported enough")
 
 
-# check if the boxes' volume is more than half of that the container's
-sum_volumes, total_volume, percentage_volume = evaluator.criterion_volume()
-if percentage_volume > 0.5:
-    print(
-        "Volume criterion PASSED: sum of volumes =",
-        sum_volumes,
-        ", total volume =",
-        total_volume,
-        ", percentage =",
-        percentage_volume,
-    )
-else:
-    print(
-        "Volume criterion FAILED: sum of volumes =",
-        sum_volumes,
-        ", total volume =",
-        total_volume,
-        ", percentage =",
-        percentage_volume,
-    )
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python3 main.py <csv_file_name>")
+    else:
+        validate_placemnet(sys.argv[1])
