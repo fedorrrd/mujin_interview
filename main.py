@@ -67,7 +67,7 @@ class Evaluator:
         for box in self.data:
             volume = box["sizeX"] * box["sizeY"] * box["sizeZ"]
             sum_volumes += volume
-            # update the values assuming there are no intersections
+            # update the values assuming there are no intersections (for criterion 3)
             if initialized:
                 min_x, min_y, min_z, max_x, max_y, max_z = self.bounding_box(box)
                 total_min_x = min(total_min_x, min_x)
@@ -229,8 +229,6 @@ class Evaluator:
         return self.sum_volumes, total_volume, percentage_volume
 
     def criterion_support(self):
-        # the following code assumes that the placement passed intersection and availability validation
-
         # sort the data in ascending order of posZ
         sorted_data = sorted(self.data, key=lambda x: x["posZ"])
         # empty array of the boxes, which are confirmed to be supported
